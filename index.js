@@ -2,6 +2,14 @@ require('app-module-path').addPath(__dirname);
 
 var args = require('minimist')(process.argv.slice(2));
 
+if(!args.no_stackdriver) {
+    try {
+        require('@google-cloud/trace-agent').start();
+    } catch(err) {
+        console.log(`Could not start Stackdriver Trace agent: [${e.name}]: ${e.message}`);
+    };
+}
+
 var winston = require('winston');
 var uuidv1 = require('uuid/v1');
 
@@ -10,13 +18,27 @@ winston.setLevels(winston.config.syslog.levels);
 winston.level = args.log_level ||'info';
 winston.add(winston.transports.File, { filename: args.log_file || '/var/log/parttracker.log' });
 
+if(!args.no_stackdriver) {
+    try {
+        var stackdriver_transport = require('@google-cloud/logging-winston');
+        winston.add(stackdriver_transport);
+    } catch(err) {
+        // log and continue
+        winston.log('error', `Could not start Stackdriver Logging transport for Winston: [${e.name}]: ${e.message}`);
+    };
+
+}
+
 if(!args.no_syslog) {
     try {
         require('winston-syslog').Syslog;
         winston.add(winston.transports.Syslog, {
             app_name: 'parttrackerd'
         });
-    } catch(err) {}; // do nothing
+    } catch(err) {
+        // log and continue
+        winston.log('error', `Could not start Syslog transport for Winston: [${e.name}]: ${e.message}`);
+    };
 }
 
 //winston.remove(winston.transports.Console);
@@ -168,6 +190,20 @@ if(args.no_https) {
 
     // plain HTTP server for http-01 challenge support; redirects all other requests to HTTPS
     var challenge_app = express();
+    challenge_app.use((req, res, next) => {
+        winston.info(
+            'Unencrypted %s request made to %s from %s',
+            req.method, req.originalUrl, req.socket.remoteAddress.toString(),
+            {
+                method: req.method,
+                url: req.originalUrl,
+                remoteAddress: req.socket.remoteAddress.toString()
+            }
+        );
+
+        next();
+    });
+
     challenge_app.use('/.well-known/acme-challenge', express.static('acme-static/.well-known/acme-challenge'));
     challenge_app.use((req, res) => { res.redirect('https://'+req.hostname+req.url); });
 
